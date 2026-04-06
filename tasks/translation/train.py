@@ -18,7 +18,7 @@ from transformer_core import OriginalTransformer, TransformerConfig
 from data_unzip import prepare_dataset
 from dataset import (
     read_parallel_tsv,
-    flitter_by_len,
+    filter_by_len,
     build_vocab,
     TranslationDataset,
     collate_fn,
@@ -70,27 +70,51 @@ def greedy_decode(
     pad_id: int,
     max_new_tokens: int,
     device: torch.device,
-):
-    model.eval()
+) -> torch.Tensor:
+    """
+
+    Args:
+        model (nn.Module): Transformer模型
+        src_ids (torch.Tensor): 训练输入的源语言id序列，形状为(batch_size, src_seq_len)
+        src_pad_mask (torch.Tensor): 源语言id序列的padding掩码，形状为(batch_size, src_seq_len)，其中True表示对应位置是padding
+        bos_id (int): 目标语言序列开始标记的id
+        eos_id (int): 目标语言序列结束标记的id
+        pad_id (int): 目标语言序列填充标记的id
+        max_new_tokens (int):  生成的最大新token数量
+        device (torch.device): 设备
+
+    Returns:
+        torch.Tensor: 生成的目标语言id序列，形状为(batch_size, gen_seq_len)，其中gen_seq_len <= max_new_tokens + 1
+    """
+    model.eval()  # 设置模型为评估模式
 
     batch_size = src_ids.size(0)
+    # 初始化生成的目标语言序列，初始时只有开始标记
     tgt = torch.full((batch_size, 1), bos_id, dtype=torch.long, device=device)
     for _ in range(max_new_tokens):
         tgt_pad = tgt.eq(pad_id)
+        # 调用模型进行前向传播，获取下一个token的预测结果
         logits = model(
             src_token_ids=src_ids,
             tgt_token_ids=tgt,
             src_key_padding_mask=src_pad_mask,
             tgt_key_padding_mask=tgt_pad,
         )
+        # 从预测结果中选择概率最高的token作为下一个token
         next_id = logits[:, -1, :].argmax(dim=-1, keepdim=True)
+        # 将下一个token添加到生成的目标语言序列中
         tgt = torch.cat([tgt, next_id], dim=1)
+        # 如果生成的下一个token都是结束标记，则停止生成
         if torch.all(next_id.squeeze(1).eq(eos_id)):
             break
     return tgt
 
 
-def main():
+def train():
+    """
+    训练函数，包含数据准备、模型构建、训练循环、验证和模型保存等步骤
+    """
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--max_pairs", type=int, default=20000)
@@ -129,7 +153,7 @@ def main():
     # 1. 准备数据
     data_txt = prepare_dataset(os.path.join(HERE, "data"))
     pairs_raw = read_parallel_tsv(data_txt, max_pairs=args.max_pairs)
-    pairs_tok = flitter_by_len(pairs_raw, max_len=args.max_len)
+    pairs_tok = filter_by_len(pairs_raw, max_len=args.max_len)
     random.shuffle(pairs_tok)
     n = len(pairs_tok)
     n_train = int(n * 0.9)
@@ -178,7 +202,8 @@ def main():
     loss_fn = nn.CrossEntropyLoss(ignore_index=tgt_vocab.pad_id)
 
     # 5. 训练
-    best_val = float("inf")
+    best_val = float("inf")  # 验证集上最好的损失，用于保存最佳模型
+    # 模型检查点路径，保存最佳模型参数和相关信息
     ckpt_path = os.path.join(HERE, "checkpoints", args.save_name)
 
     for epoch in range(1, args.epoches + 1):
@@ -188,8 +213,8 @@ def main():
         for step, (src_ids, tgt_ids) in enumerate(train_loader, start=1):
             src_ids = src_ids.to(device)
             tgt_ids = tgt_ids.to(device)
-            tgt_in = tgt_ids[:, :-1]
-            tgt_out = tgt_ids[:, 1:]
+            tgt_in = tgt_ids[:, :-1]  # 输入的目标语言id序列，去掉最后一个token
+            tgt_out = tgt_ids[:, 1:]  # 输出的目标语言id序列，去掉第一个token
 
             src_pad = src_ids.eq(src_vocab.pad_id)
             tgt_pad = tgt_in.eq(tgt_vocab.pad_id)
@@ -207,6 +232,7 @@ def main():
             opt.zero_grad(set_to_none=True)
             loss.backward()
 
+            # 梯度裁剪，防止梯度爆炸
             if args.grad_clip is not None and args.grad_clip > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
 
@@ -257,6 +283,7 @@ def main():
         val_loss = val_loss_sum / val_tokens
         print(f"[epoch {epoch}] train_loss={train_loss:.4f}, val_loss={val_loss:.4f}")
 
+        # 7. 保存最佳模型
         if val_loss < best_val:
             best_val = val_loss
             payload = {
@@ -312,4 +339,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    train()
