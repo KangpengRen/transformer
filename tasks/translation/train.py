@@ -110,11 +110,7 @@ def greedy_decode(
     return tgt
 
 
-def train():
-    """
-    训练函数，包含数据准备、模型构建、训练循环、验证和模型保存等步骤
-    """
-
+def build_arg_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser()
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--max_pairs", type=int, default=20000)
@@ -145,6 +141,15 @@ def train():
     ap.add_argument("--save_name", type=str, default="transformer_translation.py")
 
     args = ap.parse_args()
+    return args
+
+
+def train():
+    """
+    训练函数，包含数据准备、模型构建、训练循环、验证和模型保存等步骤
+    """
+
+    args = build_arg_parser()
     set_seed(args.seed)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -202,7 +207,8 @@ def train():
     loss_fn = nn.CrossEntropyLoss(ignore_index=tgt_vocab.pad_id)
 
     # 5. 训练
-    best_val = float("inf")  # 验证集上最好的损失，用于保存最佳模型
+    # 验证集上最好的损失，用于保存最佳模型
+    best_val = float("inf")
     # 模型检查点路径，保存最佳模型参数和相关信息
     ckpt_path = os.path.join(HERE, "checkpoints", args.save_name)
 
